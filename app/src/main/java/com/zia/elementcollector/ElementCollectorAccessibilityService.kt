@@ -1,8 +1,9 @@
-package com.google.android.marvin.talkback
+package com.zia.elementcollector
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.net.Uri
@@ -10,13 +11,16 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
+import android.view.LayoutInflater
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Button
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.w3c.dom.Document
@@ -30,7 +34,7 @@ import javax.xml.transform.dom.DOMSource
 import javax.xml.transform.stream.StreamResult
 import javax.xml.transform.OutputKeys
 
-class TalkBackService : AccessibilityService() {
+open class ElementCollectorAccessibilityService : AccessibilityService() {
     
     companion object {
         private const val TAG = "ElementCollectorService"
@@ -41,6 +45,11 @@ class TalkBackService : AccessibilityService() {
     private var windowManager: WindowManager? = null
     private var floatingButton: View? = null
     private var isFloatingWindowShowing = false
+    private var initialX: Int = 0
+    private var initialY: Int = 0
+    private var initialTouchX: Float = 0f
+    private var initialTouchY: Float = 0f
+    private var floatingParams: WindowManager.LayoutParams? = null
     
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -62,11 +71,11 @@ class TalkBackService : AccessibilityService() {
             requestOverlayPermission()
         }
     }
-
-    override fun onAccessibilityEvent(p0: AccessibilityEvent?) {
-
+    
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // 不再自动创建悬浮窗，避免重复创建
     }
-
+    
     override fun onInterrupt() {
         Log.d(TAG, "无障碍服务被中断")
     }
@@ -85,41 +94,10 @@ class TalkBackService : AccessibilityService() {
             
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
             
-            // 创建悬浮按钮
-            floatingButton = View(this).apply {
-                setBackgroundColor(android.graphics.Color.parseColor("#80000000"))
-                
-                // 设置点击监听
-                setOnClickListener {
-                    Log.d(TAG, "悬浮窗按钮被点击")
-                    serviceScope.launch {
-                        collectPageElements()
-                    }
-                }
-                
-                // 设置触摸监听
-                setOnTouchListener { _, event ->
-                    when (event.action) {
-                        android.view.MotionEvent.ACTION_DOWN -> {
-                            Log.d(TAG, "悬浮窗按钮按下")
-                            true
-                        }
-                        android.view.MotionEvent.ACTION_UP -> {
-                            Log.d(TAG, "悬浮窗按钮抬起")
-                            serviceScope.launch {
-                                collectPageElements()
-                            }
-                            true
-                        }
-                        else -> false
-                    }
-                }
-            }
-            
             // 设置悬浮窗参数
-            val params = WindowManager.LayoutParams().apply {
-                width = 100
-                height = 50
+            floatingParams = WindowManager.LayoutParams().apply {
+                width = 120
+                height = 60
                 type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 } else {
@@ -133,11 +111,60 @@ class TalkBackService : AccessibilityService() {
                 y = 100
             }
             
-            // 添加悬浮窗
-            windowManager?.addView(floatingButton, params)
-            isFloatingWindowShowing = true
+            // 创建悬浮按钮
+            floatingButton = Button(this).apply {
+                text = "收集元素"
+                textSize = 16f
+                setPadding(16, 8, 16, 8)
+                setBackgroundColor(android.graphics.Color.parseColor("#CCFFFFFF"))
+                setTextColor(android.graphics.Color.BLACK)
+                
+                // 设置拖拽监听
+                setOnTouchListener { _, event ->
+                    when (event.action) {
+                        android.view.MotionEvent.ACTION_DOWN -> {
+                            initialTouchX = event.rawX
+                            initialTouchY = event.rawY
+                            initialX = floatingParams?.x ?: 0
+                            initialY = floatingParams?.y ?: 0
+                            true
+                        }
+                        android.view.MotionEvent.ACTION_MOVE -> {
+                            val deltaX = (event.rawX - initialTouchX).toInt()
+                            val deltaY = (event.rawY - initialTouchY).toInt()
+                            floatingParams?.let { params ->
+                                params.x = initialX + deltaX
+                                params.y = initialY + deltaY
+                                windowManager?.updateViewLayout(floatingButton, params)
+                            }
+                            true
+                        }
+                        android.view.MotionEvent.ACTION_UP -> {
+                            // 检查是否是点击（移动距离很小）
+                            val deltaX = (event.rawX - initialTouchX).toInt()
+                            val deltaY = (event.rawY - initialTouchY).toInt()
+                            if (Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10) {
+                                Log.d(TAG, "悬浮窗按钮被点击")
+                                // 显示点击反馈
+                                showClickFeedback()
+                                serviceScope.launch {
+                                    collectPageElements()
+                                }
+                            }
+                            true
+                        }
+                        else -> false
+                    }
+                }
+            }
             
-            Log.d(TAG, "悬浮窗创建成功")
+            // 添加悬浮窗
+            floatingParams?.let { params ->
+                windowManager?.addView(floatingButton, params)
+                isFloatingWindowShowing = true
+                
+                Log.d(TAG, "悬浮窗创建成功")
+            }
             
         } catch (e: Exception) {
             Log.e(TAG, "创建悬浮窗失败", e)
@@ -167,8 +194,6 @@ class TalkBackService : AccessibilityService() {
         }
     }
     
-
-    
     private fun removeFloatingWindow() {
         try {
             if (isFloatingWindowShowing && floatingButton != null) {
@@ -188,7 +213,10 @@ class TalkBackService : AccessibilityService() {
             val pageInfo = analyzePageStructure(rootNode)
             
             // 保存到文件
-            saveToFile(pageInfo)
+            val filePath = saveToFile(pageInfo)
+            
+            // 显示预览
+            showResultPreview(filePath)
             
             // 输出到日志
             Log.d(TAG, "页面元素收集完成")
@@ -414,8 +442,8 @@ class TalkBackService : AccessibilityService() {
         return count
     }
     
-    private suspend fun saveToFile(doc: Document) {
-        withContext(Dispatchers.IO) {
+    private suspend fun saveToFile(doc: Document): String {
+        return withContext(Dispatchers.IO) {
             try {
                 val outputDir = File(getExternalFilesDir(null), OUTPUT_DIR)
                 if (!outputDir.exists()) {
@@ -439,10 +467,60 @@ class TalkBackService : AccessibilityService() {
                 transformer.transform(source, result)
                 
                 Log.d(TAG, "页面元素信息已保存到: ${file.absolutePath}")
+                file.absolutePath
                 
             } catch (e: Exception) {
                 Log.e(TAG, "保存文件时出错", e)
+                ""
             }
+        }
+    }
+    
+    private fun showClickFeedback() {
+        try {
+            val button = floatingButton as? Button
+            button?.let { btn ->
+                // 保存原始文本
+                val originalText = btn.text.toString()
+                
+                // 改变文本和背景色
+                btn.text = "收集完成"
+                btn.setBackgroundColor(android.graphics.Color.parseColor("#4CAF50")) // 绿色
+                btn.setTextColor(android.graphics.Color.WHITE)
+                
+                // 1秒后恢复
+                btn.postDelayed({
+                    btn.text = originalText
+                    btn.setBackgroundColor(android.graphics.Color.parseColor("#CCFFFFFF")) // 白色半透明
+                    btn.setTextColor(android.graphics.Color.BLACK)
+                }, 1000)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "显示点击反馈时出错", e)
+        }
+    }
+    
+    private fun showResultPreview(filePath: String) {
+        if (filePath.isEmpty()) return
+        
+        try {
+            val file = File(filePath)
+            if (!file.exists()) return
+            
+            // 读取完整的文件内容
+            val content = file.readText()
+            
+            // 显示预览对话框
+            val intent = Intent(this, PreviewActivity::class.java).apply {
+                putExtra("file_path", filePath)
+                putExtra("preview_content", content)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "显示预览时出错", e)
+            Toast.makeText(this, "预览失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 } 

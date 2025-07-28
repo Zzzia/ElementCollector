@@ -8,9 +8,12 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,7 +24,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.android.marvin.talkback.TalkBackService
 import com.zia.elementcollector.ui.theme.ElementCollectorTheme
+import kotlinx.coroutines.delay
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.*
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,11 +50,24 @@ fun MainScreen(modifier: Modifier = Modifier) {
     var hasOverlayPermission by remember { mutableStateOf(false) }
     var outputFiles by remember { mutableStateOf<List<File>>(emptyList()) }
     
-    // 检查服务状态和权限
-    LaunchedEffect(Unit) {
+    // 刷新状态的函数
+    fun refreshStatus() {
         isAccessibilityEnabled = isAccessibilityServiceEnabled(context)
         hasOverlayPermission = checkOverlayPermission(context)
         outputFiles = loadOutputFiles(context)
+    }
+    
+    // 检查服务状态和权限
+    LaunchedEffect(Unit) {
+        refreshStatus()
+    }
+    
+    // 定期刷新状态（每2秒）
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(2000)
+            refreshStatus()
+        }
     }
     
     LazyColumn(
@@ -89,13 +108,23 @@ fun MainScreen(modifier: Modifier = Modifier) {
                                    else MaterialTheme.colorScheme.error
                         )
                         
-                        Button(
-                            onClick = {
-                                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                                context.startActivity(intent)
-                            }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("打开无障碍设置")
+                            Button(
+                                onClick = {
+                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                    context.startActivity(intent)
+                                }
+                            ) {
+                                Text("打开无障碍设置")
+                            }
+                            
+                            Button(
+                                onClick = { refreshStatus() }
+                            ) {
+                                Text("刷新状态")
+                            }
                         }
                     }
                 }
@@ -189,10 +218,56 @@ fun MainScreen(modifier: Modifier = Modifier) {
                         )
                     } else {
                         outputFiles.forEach { file ->
-                            Text(
-                                text = file.name,
-                                fontSize = 14.sp
-                            )
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // 点击文件进入预览
+                                        val content = try {
+                                            file.readText()
+                                        } catch (e: Exception) {
+                                            "无法读取文件内容: ${e.message}"
+                                        }
+                                        
+                                        val intent = Intent(context, PreviewActivity::class.java).apply {
+                                            putExtra("file_path", file.absolutePath)
+                                            putExtra("preview_content", content)
+                                        }
+                                        context.startActivity(intent)
+                                    },
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            text = file.name,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Text(
+                                            text = "大小: ${file.length()} 字节 | 时间: ${SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(file.lastModified()))}",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowForward,
+                                        contentDescription = "预览",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
                         }
                     }
                 }
